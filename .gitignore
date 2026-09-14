@@ -1,0 +1,10 @@
+# output di compilazione: non si versiona mai
+bin/
+*.class
+
+# sistema operativo, editor e IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
