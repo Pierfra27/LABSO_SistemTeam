@@ -40,6 +40,10 @@ public final class Protocol {
 
     public static final String REQ_REMOVED = "REMOVED";
 
+    // RESOLVE / RESOLVE_AT possono restare SENZA RISPOSTA per un tempo arbitrario: 
+    // il token e' un lock sul nodo sorgente e chi lo trova occupato attende. Chi legge la risposta deve quindi disattivare il
+    // timeout di lettura per questi due soli messaggi.
+    
     public static final String REQ_RESOLVE = "RESOLVE";
 
     public static final String REQ_RESOLVE_AT = "RESOLVE_AT";
