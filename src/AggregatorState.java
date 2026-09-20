@@ -1,10 +1,9 @@
-/* import java.util.ArrayList;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-*/
 
 /**
  * AggregatorState = MECCANISMO 1 del progetto.
@@ -90,6 +89,70 @@ public class AggregatorState{
 
         static EsitoRisolvi nessunCandidato(){
             return new EsitoRisolvi(null, null, 0);
+        }
+    }
+
+    //STATO PROTETTO DAL MONITOR (tre campi privati)
+    /** risorsa -> lista dei peerId che la possiedono */
+    private final Map<String, ArrayList<String>> possessori = new HashMap<>();
+
+    /** peerId -> anagrafica del peer */
+    private final Map<String, PeerInfo> registro = new HashMap<>();
+
+    /** Prossimo numero da usare per generare "peerN". Cresce sempre, mai riusato */
+    private int prossimoId = 0;
+
+    // REGISTRAZIONE: e' una singola scrittura atomica
+
+    /**
+     * Registra un nuovo nodo e le sue risorse in un'unica operazione
+     * synchronized. Chi chiama (il NodeHandler) deve aver gia' letto tuttue
+     * le righe della REGISTER PRIMA di chiamare questo metodo: qui non si fa 
+     * alcuna lettura dal socket, solo scrittura in momoria. E' questo che 
+     * rende impossibile una "registrazione a meta'" visibile da altri thread.
+     */
+    public synchronized String completaRegistrazione(String host, int porta, List<String> nomiRisorse){
+        String peerId = "peer" + prossimoId;
+        prossimoId++;
+
+        registro.put(peerId, new PeerInfo(peerId, host, porta));
+
+        for(String risorsa : nomiRisorse){
+            possessori.computeIfAbsent(risorsa, r -> new ArrayList<>()).add(peerId);
+        }
+
+        return peerId;
+    }
+
+    //SCRITTURE SINGOLE
+    public synchronized void aggiungiRisorsa(String peerId, String risorsa){
+        ArrayList<String> lista = possessori.computeIfAbsent(risorsa, r -> new ArrayList<>());
+        if (!lista.contains(peerId)) {
+            lista.add(peerId);
+        }
+    }
+
+    public synchronized void rimuoviRisorsa(String peerId, String risorsa){
+        ArrayList<String> lista = possessori.get(risorsa);
+        if (lista != null) {
+            lista.remove(peerId);
+            // Non lasciamo in giro liste vuote: non e' obbligatorio, ma tiene 
+            // la tabella pulita e semplifica elencoRisorse().
+            if (lista.isEmpty()) {
+                possessori.remove(risorsa);
+            }
+        }
+    }
+
+    /**
+     * Marca il peer come inattivo (crash o quit). NON tocca le sue risorse:
+     * restano nella tabella, come richiesto dalla specifica "le rilevazioni non vengono eliminate, 
+     * ma non saranno piu' accessibili".
+     */
+    public synchronized void disconnetti(String peerId){
+        PeerInfo info = registro.get(peerId);
+        if (info != null) {
+            info.attivo = false;
         }
     }
 }
