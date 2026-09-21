@@ -155,4 +155,122 @@ public class AggregatorState{
             info.attivo = false;
         }
     }
+                        
+    //LETTURE (tutte ritornano COPIE: nessun riferimento interno esce dal monitor)
+    /**
+    * nome == null -> tutte le risorse, ordinate alfabeticamente;
+    * nome != null -> la sola riga di quella risorsa (lista vuota se nessuno la possiede).
+    * 
+    * Il filtro sta dentro questo stesso metodo synchronized: niente metodo in piu', niente copia
+    * dell'intera tabella quando basta una riga sola;
+    * 
+    * Ogni riga e' formattata gia' qui come "risorsa: peer2, peer0,..." con i possessori 
+    * ordinati per SUFFISSO NUMERICO del peerId (peer2, prima di peer10), non alfabeticamente.
+    */
+   public synchronized List<String> elencoRisorse(String nome){
+        List<String> righe = new ArrayList<>();
+
+        if (nome != null) {
+            ArrayList<String> lista =  possessori.get(nome);
+            if(lista != null && !lista.isEmpty()){
+                righe.add(formattaRiga(nome, lista));
+            }
+            return righe; // 0 o 1 riga.
+        }
+
+        List<String> nomiOrdinati = new ArrayList<>(possessori.keySet());
+        Collections.sort(nomiOrdinati);
+        for(String risorsa : nomiOrdinati){
+            righe.add(formattaRiga(risorsa, possessori.get(risorsa)));
+        }
+        return righe;
+    }
+
+    private String formattaRiga(String risorsa, List<String> possessoriRisorsa){
+        List<String> copia = new ArrayList<>(possessoriRisorsa);
+        copia.sort(Comparator.comparingInt(AggregatorState::suffissoNumerico)); 
+        StringBuilder sb = new StringBuilder(risorsa).append(":");
+        for(int i = 0; i < copia.size(); i++){
+            sb.append(i == 0 ? " " : ", ").append(copia.get(i));
+        } 
+        return sb.toString();
+    }
+
+    // Solo i peer attivi, ordinati per suffisso numerico del peerId.
+    public synchronized List<String> elencoPeerAttivi(){
+        List<String> attivi = new ArrayList<>();
+        for(PeerInfo info : registro.values()){
+            if(info.attivo){
+                attivi.add(info.peerId);
+            }
+        }
+        attivi.sort(Comparator.comparingInt(AggregatorState::suffissoNumerico));
+        return attivi;
+    }
+
+    // Anagrafica di un peer (copia), o null se sconosciuto
+    public synchronized PeerInfo indirizzoDi(String peerId){
+        PeerInfo info = registro.get(peerId);
+        return (info == null) ? null : info.copia();
+    }
+
+    /**
+     * MECCANISMO 1 + scelta del candidato per il download (usata da RESOLVE).
+     * 
+     * Fa, TUTTO sotto lo stesso monitor:
+     * 1. rimuove dalla tabella le entry (peer, risorsa) che il chiamante ha gia' 
+     * escluso (tentativi falliti in precedenza) e quelle dei peer ormai inattivi
+     * incontrate per la risorsa cercata;
+     * 2. fra i possessori rimasti, esclude il richiedente stesso (non ha senso scaricare
+     * da se stessi);
+     * 3. sceglie, fra quelli che restano, il peerId con il suffisso numerico piu' basso,
+     * (scelta deterministica).
+     * 
+     * Il risultato esce dal monitor come EsitoRisolvi (solo dati): la scelta del token e la
+     * scrittura sul log avvengono DOPO, fuori da questo metodo, nel NodeHandler.
+     */
+
+    public synchronized EsitoRisolvi risolvi(String richiedente, String risorsa, List<String> esclusi){
+        ArrayList<String> lista = possessori.get(risorsa);
+        if(lista == null || lista.isEmpty()){
+            return EsitoRisolvi.nessunCandidato();
+        }
+
+        // Eviction: rimuoviamo dalla lista vera (non da una copia) i
+        // possessori esclusi esplicitamente e quelli ormai inattivi.
+        lista.removeIf(peerId -> {
+            if(esclusi.contains(peerId)){
+                return true;
+            }
+            PeerInfo info = registro.get(peerId);
+            return info == null || !info.attivo;
+        });
+        if(lista.isEmpty()){
+            possessori.remove(risorsa);
+            return EsitoRisolvi.nessunCandidato();
+        }
+
+        // Fra i rimanenti, candidati validi = diversi dal richiedente.
+        String scelto = null;
+        for(String peerId : lista){
+            if(peerId.equals(richiedente)){
+                continue;
+            }
+            if(scelto == null || suffissoNumerico(peerId) < suffissoNumerico(scelto)){
+                scelto = peerId;
+            }
+        }
+        if(scelto == null){
+            return EsitoRisolvi.nessunCandidato();
+        }
+
+        PeerInfo info = registro.get(scelto);
+        return new EsitoRisolvi(scelto, info.host, info.porta);
+    }
+
+    // Per ordinate per suffisso numerico
+    private static int suffissoNumerico(String peerId){
+        String cifre = peerId.replaceAll("[^0-9]", "");
+        return cifre.isEmpty() ? 0 : Integer.parseInt(cifre);
+    }
 }
