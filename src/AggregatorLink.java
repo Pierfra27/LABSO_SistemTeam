@@ -56,47 +56,44 @@ public class AggregatorLink {
         
         //qua ci sono due casi per cui il rpocesso fallisce
         // o per l'eccezione lanciata da readLine o per la prima riga nulla
-        String primaRiga = Protocol.readLine(in);
-        if (primaRiga == null) {
+        } catch (IOException e) {
+            linkCaduto = true;
+            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+        }
+   
+        return leggiRisposta();
+
+ }
+
+    /**
+     * Manda la REGISTER: una riga di intestazione seguita da n righe (i nomi delle risorse).
+     * Usato solo da Client.java, una volta sola, all'avvio.
+     */
+ public synchronized Risposta registrati(String richiesta, List<String> righeExtra) {
+        if (linkCaduto) {
+            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+        }
+
+        try {
+            Protocol.writeLine(out, richiesta);
+            for (int i = 0; i < righeExtra.size(); i++) {
+                Protocol.writeLine(out, righeExtra.get(i));
+            }
+        } catch (IOException e) {
             linkCaduto = true;
             return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
         }
 
-
-        String[] campi = Protocol.split(primaRiga);//es: "OK t7 peer1 127.0.0.1 5001" lo spezzo in campi[0]="OK" cambpi[1]="t7"...
-        boolean ok = false;
-         if (campi.length > 0) 
-            {
-             ok = campi[0].equals(Protocol.RESP_OK);//visto in Protocol.java così da non creare una dipendenza con la parola OK
-            }
-
-        List<String> righeExtra = new ArrayList<>();
-        // Un elenco ha la forma "OK <n>": se il secondo campo c'e' ed e' un numero, seguono n righe.
-        if (ok && campi.length >= 2) {
-            try {
-                int n = Protocol.parseInt(campi[1]);
-                for (int i = 0; i < n; i++) {
-                    String riga = Protocol.readLine(in);
-                    if (riga == null) {
-                        linkCaduto = true;
-                        return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
-                    }
-                    righeExtra.add(riga);
-                }
-            } catch (IOException e) {
-                // campi[1] non era un numero: risposta senza elenco (es. "OK peer3"), non un errore.
-            }
-        }
-
-        return new Risposta(ok, campi, righeExtra);
-
-    } catch (IOException e) {
-        linkCaduto = true;
-        return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+        return leggiRisposta();
     }
- }
-
-  public synchronized Risposta inviaConAttesaIndefinita(String richiesta) {
+/**
+     * Come invia(), ma con attesa INDEFINITA sulla lettura della risposta: usato SOLO per
+     * RESOLVE e RESOLVE_AT, che possono restare senza risposta finche' il token del nodo
+     * sorgente non si libera (Meccanismo 3). Il timeout normale viene ripristinato nel
+     * finally, qualunque sia l'esito, cosi' nessun percorso di uscita lascia il socket con
+     * il timeout sbagliato.
+     */
+  public synchronized Risposta inviaResolve(String richiesta) {
         try {
             socket.setSoTimeout(0);
             return invia(richiesta);
@@ -106,6 +103,42 @@ public class AggregatorLink {
             } catch (IOException e) {
                 // il socket e' probabilmente gia' rotto: non c'e' altro da fare qui.
             }
+        }
+    }
+    
+     private Risposta leggiRisposta() {
+        try {
+            String primaRiga = Protocol.readLine(in);
+            if (primaRiga == null) {
+                linkCaduto = true;
+                return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+            }
+
+            String[] campi = Protocol.split(primaRiga);
+            boolean ok = campi.length > 0 && campi[0].equals(Protocol.RESP_OK);
+
+            List<String> righeExtra = new ArrayList<>();
+            if (ok && campi.length >= 2) {
+                try {
+                    int n = Protocol.parseInt(campi[1]);
+                    for (int i = 0; i < n; i++) {
+                        String riga = Protocol.readLine(in);
+                        if (riga == null) {
+                            linkCaduto = true;
+                            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+                        }
+                        righeExtra.add(riga);
+                    }
+                } catch (IOException e) {
+                    // campi[1] non era un numero: risposta senza elenco (es. "OK peer3").
+                }
+            }
+
+            return new Risposta(ok, campi, righeExtra);
+
+        } catch (IOException e) {
+            linkCaduto = true;
+            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
         }
     }
 
