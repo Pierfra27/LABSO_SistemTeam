@@ -5,18 +5,46 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 
-//controllo che i thread usino il socket uno alla volta, per l'intera durata dello 
-//scambio richiesta-risposta
+/**
+ * L'unica connessione verso l'aggregatore, aperta all'avvio del nodo e tenuta viva fino al
+ * quit. E' persistente e non usa-e-getta perche' e' cosi' che l'aggregatore distingue una
+ * chiusura pulita da un crash: se il socket cade senza DISCONNECT, lui riceve EOF e lo sa
+ * subito. Con una connessione nuova a ogni comando non potrebbe accorgersene mai.
+ *
+ * QUESTO E' L'UNICO PUNTO DEL PROGETTO IN CUI SI TIENE UN MONITOR DURANTE UN'OPERAZIONE DI
+ * RETE, ed e' un'eccezione voluta. invia() e' synchronized per l'INTERO scambio
+ * richiesta-risposta, non solo per la scrittura: se due thread del nodo potessero
+ * interlacciarsi sulla stessa connessione, uno leggerebbe la risposta destinata all'altro e
+ * il dialogo si sfaserebbe per sempre. Tenere il monitor anche durante la lettura e' cio'
+ * che rende lo scambio atomico.
+ *
+ * Le due mitigazioni obbligatorie di questa scelta:
+ *  - timeout di lettura di 10 secondi come valore normale, cosi' un aggregatore morto
+ *    produce un'eccezione gestibile invece di un blocco permanente;
+ *  - il flag linkCaduto: dopo un errore di I/O la connessione si considera persa e ogni
+ *    chiamata successiva fallisce subito, invece di riprovare. Il progetto non prevede
+ *    alcun riconnessione automatica: meglio un errore chiaro che un nodo che sembra vivo.
+ *
+ * Regola che vincola i chiamanti: nessuno invoca invia() da dentro un blocco synchronized.
+ * DownloadManager scrive nel LocalStore e SOLO DOPO, tornato fuori, manda la RELEASE.
+ * Altrimenti si terrebbero due monitor insieme, uno dei quali durante l'I/O di rete.
+ */
 public class AggregatorLink {
 
+    /** Timeout di lettura normale: per quasi tutti i messaggi una mancata risposta e' un'anomalia. */
+    private static final int TIMEOUT_NORMALE = 10_000;
+
+    /** Codice interno, non del protocollo: distingue "la connessione non c'e' piu'" da un ERR vero. */
+    public static final String LINK_CADUTO = "LINKCADUTO";
+
     /**
-     * Il risultato di uno scambio richiesta-risposta con l'aggregatore.
-     * Solo dati, nessun comportamento (stesso pattern di EsitoRisolvi).
+     * Il risultato di uno scambio con l'aggregatore. Solo dati, nessun comportamento: stesso
+     * criterio di EsitoRisolvi, cosi' chi lo riceve lo usa fuori dal monitor.
      */
     public static class Risposta {
         public final boolean ok;
         public final String[] campi;          // la prima riga, gia' spezzata
-        public final List<String> righeExtra; // righe seguenti, per LIST/PEERS
+        public final List<String> righeExtra; // le righe seguenti, per LIST e PEERS
 
         Risposta(boolean ok, String[] campi, List<String> righeExtra) {
             this.ok = ok;
@@ -34,115 +62,109 @@ public class AggregatorLink {
         this.socket = socket;
         this.in = socket.getInputStream();
         this.out = socket.getOutputStream();
-        this.socket.setSoTimeout(10_000); // valore normale, 10 secondi?
+        this.socket.setSoTimeout(TIMEOUT_NORMALE);
     }
-    //controllare che il link non sia già segnato come "caduto" , se lo è fallire subito
-    // scrivere la richiesta sul socket , usando Protocol.writeLine
-    // leggerla con Protocol.readLine
-    // capire se è OK o ERR, se è Ok leggere le n righe succesive
-    //impacchetare tutto in un oggetto Risposta e ritorniamo 
-   public synchronized Risposta invia(String richiesta) {
-    if (linkCaduto) {
-        return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
-    }
-
-    try {
-        Protocol.writeLine(out, richiesta);//protocol creato da noi che mette in contatto Client e Aggregator
-        //qua mi assicuro che la stringa non contenga \n e li sostituisce con spazi
-        //converte la stringa in byte e li scrive sul verso OUtputSream
-        //scrive anche il byte del carattere\n 
-        //chiama flush() per assicurarsi che i byte partano davvero subito
-
-        
-        //qua ci sono due casi per cui il rpocesso fallisce
-        // o per l'eccezione lanciata da readLine o per la prima riga nulla
-        } catch (IOException e) {
-            linkCaduto = true;
-            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
-        }
-   
-        return leggiRisposta();
-
- }
 
     /**
-     * Manda la REGISTER: una riga di intestazione seguita da n righe (i nomi delle risorse).
-     * Usato solo da Client.java, una volta sola, all'avvio.
+     * Manda una richiesta e legge la risposta.
+     *
+     * @param attendeElenco true SOLO per i comandi la cui risposta e' "OK <n>" seguita da n
+     *        righe, cioe' LIST e PEERS. Lo sa il chiamante, che ha appena scelto il comando,
+     *        e per questo glielo si chiede invece di indovinarlo qui guardando se il secondo
+     *        campo somiglia a un numero. Quell'indovinello funzionerebbe finche' token e
+     *        peerId non sono numerici, ma il giorno in cui lo diventassero si leggerebbero
+     *        righe che non esistono e OGNI risposta successiva risulterebbe sfasata di una
+     *        riga, in modo silenzioso e definitivo: un guasto che non produce eccezioni.
      */
- public synchronized Risposta registrati(String richiesta, List<String> righeExtra) {
+    public synchronized Risposta invia(String richiesta, boolean attendeElenco) {
         if (linkCaduto) {
-            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+            return caduto();
         }
 
         try {
             Protocol.writeLine(out, richiesta);
-            for (int i = 0; i < righeExtra.size(); i++) {
-                Protocol.writeLine(out, righeExtra.get(i));
-            }
-        } catch (IOException e) {
-            linkCaduto = true;
-            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
-        }
 
-        return leggiRisposta();
-    }
-/**
-     * Come invia(), ma con attesa INDEFINITA sulla lettura della risposta: usato SOLO per
-     * RESOLVE e RESOLVE_AT, che possono restare senza risposta finche' il token del nodo
-     * sorgente non si libera (Meccanismo 3). Il timeout normale viene ripristinato nel
-     * finally, qualunque sia l'esito, cosi' nessun percorso di uscita lascia il socket con
-     * il timeout sbagliato.
-     */
-  public synchronized Risposta inviaResolve(String richiesta) {
-        try {
-            socket.setSoTimeout(0);
-            return invia(richiesta);
-        } finally {
-            try {
-                socket.setSoTimeout(10_000);
-            } catch (IOException e) {
-                // il socket e' probabilmente gia' rotto: non c'e' altro da fare qui.
-            }
-        }
-    }
-    
-     private Risposta leggiRisposta() {
-        try {
             String primaRiga = Protocol.readLine(in);
             if (primaRiga == null) {
+                // L'aggregatore ha chiuso: non e' una risposta vuota, e' la fine del dialogo.
                 linkCaduto = true;
-                return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+                return caduto();
             }
 
             String[] campi = Protocol.split(primaRiga);
             boolean ok = campi.length > 0 && campi[0].equals(Protocol.RESP_OK);
 
             List<String> righeExtra = new ArrayList<>();
-            if (ok && campi.length >= 2) {
-                try {
-                    int n = Protocol.parseInt(campi[1]);
-                    for (int i = 0; i < n; i++) {
-                        String riga = Protocol.readLine(in);
-                        if (riga == null) {
-                            linkCaduto = true;
-                            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
-                        }
-                        righeExtra.add(riga);
+            if (ok && attendeElenco) {
+                if (campi.length < 2) {
+                    // Un elenco senza conteggio e' una risposta malformata: non si tira a
+                    // indovinare quante righe leggere, si considera perso il dialogo.
+                    linkCaduto = true;
+                    return caduto();
+                }
+                int quante = Protocol.parseInt(campi[1]);
+                for (int i = 0; i < quante; i++) {
+                    String riga = Protocol.readLine(in);
+                    if (riga == null) {
+                        linkCaduto = true;
+                        return caduto();
                     }
-                } catch (IOException e) {
-                    // campi[1] non era un numero: risposta senza elenco (es. "OK peer3").
+                    righeExtra.add(riga);
                 }
             }
 
             return new Risposta(ok, campi, righeExtra);
 
         } catch (IOException e) {
+            // Vale sia per un errore di rete sia per un conteggio non numerico dentro un
+            // elenco: in entrambi i casi non si sa piu' a che punto sia lo stream, e l'unica
+            // cosa sicura e' smettere di usarlo.
             linkCaduto = true;
-            return new Risposta(false, new String[]{"ERR", "LINKCADUTO"}, new ArrayList<>());
+            return caduto();
+        }
+    }
+
+    /**
+     * Come invia(), ma senza timeout di lettura. Va usata SOLO per RESOLVE e RESOLVE_AT.
+     *
+     * Con il token inteso come lock sul nodo sorgente (Meccanismo 3), una RESOLVE puo'
+     * legittimamente non rispondere per decine di secondi, perche' il nodo da cui si vuole
+     * scaricare e' occupato da un altro download. Con i 10 secondi normali il client si
+     * arrenderebbe proprio mentre il sistema sta funzionando come previsto, e le specifiche
+     * vietano che una richiesta in attesa termini con un errore.
+     *
+     * Il ripristino del timeout normale sta in un finally, cosi' nessun percorso di uscita
+     * lascia il socket con l'attesa infinita attiva anche per gli altri messaggi.
+     *
+     * Nota sui monitor: questo metodo e' synchronized e chiama invia(), anch'esso
+     * synchronized sullo stesso oggetto. Non e' l'annidamento di monitor che il progetto
+     * vieta: quello riguarda DUE monitor diversi. I monitor Java sono rientranti, quindi un
+     * thread che possiede gia' questo monitor puo' rientrarvi senza bloccarsi.
+     */
+    public synchronized Risposta inviaConAttesaIndefinita(String richiesta) {
+        try {
+            socket.setSoTimeout(0);
+        } catch (IOException e) {
+            linkCaduto = true;
+            return caduto();
+        }
+
+        try {
+            return invia(richiesta, false);
+        } finally {
+            try {
+                socket.setSoTimeout(TIMEOUT_NORMALE);
+            } catch (IOException e) {
+                // Il socket e' gia' rotto: l'errore vero e' gia' stato segnalato da invia().
+            }
         }
     }
 
     public synchronized boolean linkCaduto() {
         return linkCaduto;
+    }
+
+    private static Risposta caduto() {
+        return new Risposta(false, new String[]{Protocol.RESP_ERR, LINK_CADUTO}, new ArrayList<>());
     }
 }
