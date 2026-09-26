@@ -2,68 +2,78 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
-
+ 
 // Gestisce una singola richiesta FETCH proveniente da un altro nodo sensore,
 // garantendo l'accesso esclusivo al nodo durante il trasferimento.
-public class PeerHandler extends Thread {
-
+public class PeerHandler implements Runnable {
+ 
+    /**
+     * Ritardo diagnostico, in millisecondi, attivato con -Dlabso.slow=<ms> all'avvio del nodo
+     * e spento di default. Rallenta la fase di servizio DENTRO la sezione critica, cosi' che
+     * il trasferimento duri abbastanza da rendere visibili in demo le due attese: le altre
+     * FETCH su questo nodo che si accodano (Meccanismo 2) e gli altri nodi che aspettano sull'
+     * aggregatore il token di questo nodo (Meccanismo 3). E' uno strumento di prova, non una
+     * funzionalita'.
+     */
+    private static final long RITARDO = Long.getLong("labso.slow", 0L);
+ 
     private final Socket socket;
     private final LocalStore localStore;
     private final PeerAccessLock accessLock;
-
+ 
     public PeerHandler(Socket socket,
                        LocalStore localStore,
                        PeerAccessLock accessLock) {
-
+ 
         this.socket = socket;
         this.localStore = localStore;
         this.accessLock = accessLock;
     }
-
+ 
     @Override
     public void run() {
-
+ 
         try (Socket s = socket) {
-
+ 
             InputStream in = s.getInputStream();
             OutputStream out = s.getOutputStream();
-
+ 
             // Legge la richiesta inviata dall'altro nodo.
             String richiesta = Protocol.readLine(in);
-
+ 
             if (richiesta == null) {
                 return;
             }
-
+ 
             String[] campi = Protocol.split(richiesta);
-
+ 
             // La richiesta deve essere:
             // FETCH <risorsa> <token>
             if (campi.length != 3 ||
                     !campi[0].equals(Protocol.REQ_FETCH)) {
-
+ 
                 Protocol.writeLine(
                         out,
                         Protocol.RESP_ERR + " " + Protocol.ERR_BADREQUEST
                 );
-
+ 
                 return;
             }
-
+ 
             String nomeRisorsa = campi[1];
             String token = campi[2];
-
+ 
             // Non conosciamo il peerId del nodo richiedente tramite FETCH,
             // quindi usiamo il suo indirizzo come informazione diagnostica.
             String richiedente =
                     s.getRemoteSocketAddress().toString();
-
+ 
             if (accessLock.isOccupato()) {
                 System.out.println(
                         "[" + richiedente + "] in attesa..."
                 );
             }
-
+ 
             /*
              * IMPORTANTE:
              * acquisisci() resta fuori dal try/finally del rilascio.
@@ -76,68 +86,73 @@ public class PeerHandler extends Thread {
                 Thread.currentThread().interrupt();
                 return;
             }
-
+ 
             try {
-
+ 
+                if (RITARDO > 0) {
+                    try {
+                        Thread.sleep(RITARDO);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+ 
                 System.out.println(
                         "[" + richiedente + "] servo FETCH "
                                 + nomeRisorsa + " (token " + token + ")"
                 );
-
+ 
                 // Controlla che la rilevazione esista.
                 if (!localStore.contiene(nomeRisorsa)) {
-
+ 
                     Protocol.writeLine(
                             out,
                             Protocol.RESP_ERR + " "
                                     + Protocol.ERR_NOTFOUND
                     );
-
+ 
                     return;
                 }
-
+ 
                 byte[] contenuto;
-
+ 
                 try {
                     contenuto = localStore.leggi(nomeRisorsa);
                 } catch (IOException e) {
-
+ 
                     Protocol.writeLine(
                             out,
                             Protocol.RESP_ERR + " "
                                     + Protocol.ERR_NOTFOUND
                     );
-
+ 
                     return;
                 }
-
-                /*
-                 * Risposta: in n byte
-                 */
+ 
+                 //Risposta: in n byte
                 Protocol.writeLine(
                         out,
                         Protocol.RESP_OK
                 );
-
+ 
                 Protocol.writePayload(
                         out,
                         contenuto
                 );
-
+ 
                 System.out.println(
                         "[" + richiedente + "] FETCH completata: "
                                 + nomeRisorsa
                 );
-
+ 
             } finally {
-
-                // Il nodo deve tornare disponibile anche se durante
-                // il trasferimento avviene un errore.
+ 
+                // Il nodo deve tornare disponibile anche se durante il trasferimento avviene un errore.
                 accessLock.rilascia();
             }
-
+ 
         } catch (IOException e) {
-
+ 
             System.err.println(
                     "Errore nel PeerHandler: " + e.getMessage()
             );

@@ -4,7 +4,7 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
-
+ 
 /**
  * Un thread per ogni nodo sensore connesso: legge una richiesta, la esegue e scrive la risposta, finche' la connessione non si chiude. 
  * La connessione e' persistente, quindi l'istanza dura quanto il nodo e puo' ricordare il suo peerId.
@@ -17,7 +17,7 @@ import java.util.List;
  * L'unica eccezione e' chiudi(), che il thread della console chiama sul quit, e che tocca soltanto il socket.
  */
 public class NodeHandler implements Runnable {
-
+ 
     /**
      * Richiesta sintatticamente sbagliata: campi mancanti, numero non parsabile, esito della RELEASE diverso da OK/FAIL.
      *
@@ -27,19 +27,19 @@ public class NodeHandler implements Runnable {
      */
     private static class RichiestaMalformata extends Exception {
     }
-
+ 
     private final Socket socket;
     private final AggregatorState stato;
     private final TokenManager token;
     private final DownloadLog log;
     private final Aggregator aggregatore;
-
+ 
     /**
      * Null finche' non arriva la REGISTER: e' anche il modo in cui si riconosce un nodo non ancora registrato (ERR NOTREGISTERED) 
      * e una seconda REGISTER sulla stessa connessione (ERR BADREQUEST).
      */
     private String peerId;
-
+ 
     public NodeHandler(Socket socket, AggregatorState stato, TokenManager token,
                        DownloadLog log, Aggregator aggregatore) {
         this.socket = socket;
@@ -48,7 +48,7 @@ public class NodeHandler implements Runnable {
         this.log = log;
         this.aggregatore = aggregatore;
     }
-
+ 
     @Override
     public void run() {
         System.out.println("Connessione da " + socket.getInetAddress().getHostAddress());
@@ -69,7 +69,7 @@ public class NodeHandler implements Runnable {
             pulizia();
         }
     }
-
+ 
     /**
      * Il ciclo di servizio. Le due eccezioni che escono da qui (IOException e InterruptedException) significano entrambe "questa connessione e' finita"; 
      * tutto cio' che invece e' colpa della richiesta e non del canale diventa una risposta ERR e il ciclo prosegue.
@@ -80,13 +80,13 @@ public class NodeHandler implements Runnable {
             if (riga == null) {
                 return; // chiusura pulita dall'altro capo: la pulizia la fa il finally
             }
-
+ 
             String[] campi = Protocol.split(riga);
             if (campi.length == 0) {
                 Protocol.writeLine(out, errore(Protocol.ERR_BADREQUEST));
                 continue;
             }
-
+ 
             try {
                 if (!esegui(campi, in, out)) {
                     return;
@@ -96,7 +96,7 @@ public class NodeHandler implements Runnable {
             }
         }
     }
-
+ 
     /**
      * Esegue una singola richiesta.
      *
@@ -104,15 +104,15 @@ public class NodeHandler implements Runnable {
      */
     private boolean esegui(String[] campi, InputStream in, OutputStream out)
             throws IOException, InterruptedException, RichiestaMalformata {
-
+ 
         String comando = campi[0];
-
+ 
         // Il controllo sta prima del dispatch e non dentro ogni singolo ramo: la regola e' dello stesso tipo per tutti i comandi.
         if (peerId == null && !comando.equals(Protocol.REQ_REGISTER)) {
             Protocol.writeLine(out, errore(Protocol.ERR_NOTREGISTERED));
             return true;
         }
-
+ 
         if (comando.equals(Protocol.REQ_REGISTER)) {
             return register(campi, in, out);
         }
@@ -141,10 +141,10 @@ public class NodeHandler implements Runnable {
             Protocol.writeLine(out, Protocol.RESP_OK);
             return false; // la pulizia e la chiusura del socket le fa il finally
         }
-
+ 
         throw new RichiestaMalformata();
     }
-
+ 
     /**
      * REGISTER portaAscolto n, seguita da n righe con i nomi delle risorse.
      *
@@ -154,7 +154,7 @@ public class NodeHandler implements Runnable {
      */
     private boolean register(String[] campi, InputStream in, OutputStream out)
             throws IOException, RichiestaMalformata {
-
+ 
         if (peerId != null) {
             // Una seconda REGISTER cambierebbe identita' a meta' dialogo: le richieste gia' servite resterebbero attribuite al peerId vecchio.
             Protocol.writeLine(out, errore(Protocol.ERR_BADREQUEST));
@@ -163,13 +163,13 @@ public class NodeHandler implements Runnable {
         if (campi.length < 3) {
             throw new RichiestaMalformata();
         }
-
+ 
         int porta = numero(campi[1]);
         int quante = numero(campi[2]);
         if (porta < 1 || porta > 65535 || quante < 0) {
             throw new RichiestaMalformata();
         }
-
+ 
         List<String> nomi = new ArrayList<>();
         for (int i = 0; i < quante; i++) {
             String nome = Protocol.readLine(in);
@@ -182,35 +182,35 @@ public class NodeHandler implements Runnable {
                 nomi.add(nome);
             }
         }
-
+ 
         String host = socket.getInetAddress().getHostAddress();
         peerId = stato.completaRegistrazione(host, porta, nomi);
-
+ 
         Protocol.writeLine(out, Protocol.RESP_OK + " " + peerId);
         System.out.println("Registrato " + peerId + " (" + host + ":" + porta + ") con "
                 + nomi.size() + " risorse");
         return true;
     }
-
+ 
     // LIST nome|- : il "-" diventa il null che AggregatorState intende come "tutte".
     private boolean list(String[] campi, OutputStream out) throws IOException, RichiestaMalformata {
         if (campi.length < 2) {
             throw new RichiestaMalformata();
         }
         String nome = campi[1].equals(Protocol.NONE) ? null : campi[1];
-
+ 
         // Le righe arrivano gia' nel formato: "temp_bo peer0 peer1"; qui non si formatta nulla, perche' la forma leggibile serve solo alle console.
         List<String> righe = stato.elencoRisorse(nome);
         scriviElenco(out, righe);
         return true;
     }
-
+ 
     private boolean peers(OutputStream out) throws IOException {
         List<String> attivi = stato.elencoPeerAttivi();
         scriviElenco(out, attivi);
         return true;
     }
-
+ 
     private boolean added(String[] campi, OutputStream out) throws IOException, RichiestaMalformata {
         if (campi.length < 2) {
             throw new RichiestaMalformata();
@@ -219,7 +219,7 @@ public class NodeHandler implements Runnable {
         Protocol.writeLine(out, Protocol.RESP_OK);
         return true;
     }
-
+ 
     private boolean removed(String[] campi, OutputStream out) throws IOException, RichiestaMalformata {
         if (campi.length < 2) {
             throw new RichiestaMalformata();
@@ -228,7 +228,7 @@ public class NodeHandler implements Runnable {
         Protocol.writeLine(out, Protocol.RESP_OK);
         return true;
     }
-
+ 
     /**
      * RESOLVE risorsa token|- esclusiCsv|- : sceglie il nodo da cui scaricare e ne acquisisce il token.
      *
@@ -241,20 +241,20 @@ public class NodeHandler implements Runnable {
      */
     private boolean resolve(String[] campi, OutputStream out)
             throws IOException, InterruptedException, RichiestaMalformata {
-
+ 
         if (campi.length < 4) {
             throw new RichiestaMalformata();
         }
         String risorsa = campi[1];
         String tokenRicevuto = campi[2];
         String esclusiCsv = campi[3];
-
+ 
         // Caso residuo: con il ciclo di download previsto il client ha gia' rilasciato il token precedente e invia "-". 
         // Si gestisce lo stesso, perche' un token non rilasciato terrebbe bloccato un nodo sorgente per tutti.
         rilasciaSeMio(tokenRicevuto);
-
+ 
         AggregatorState.EsitoRisolvi esito = stato.risolvi(peerId, risorsa, esclusi(esclusiCsv));
-
+ 
         if (esito.peerId == null) {
             // Nessun candidato: la riga di log si scrive comunque, perche' anche una richiesta andata a vuoto e' una richiesta di download e deve comparire nel registro.
             // Nessun token viene acquisito: non c'e' alcun nodo da bloccare.
@@ -262,12 +262,12 @@ public class NodeHandler implements Runnable {
             Protocol.writeLine(out, errore(Protocol.ERR_NOTFOUND));
             return true;
         }
-
+ 
         Protocol.writeLine(out, rispostaResolve(acquisisci(esito.peerId, risorsa), esito.peerId,
                 esito.host, esito.porta));
         return true;
     }
-
+ 
     /**
      * RESOLVE_AT risorsa peerDestinazione token|- : download mirato su un nodo scelto dall'utente, quindi senza scelta del candidato e senza eviction.
      *
@@ -276,31 +276,31 @@ public class NodeHandler implements Runnable {
      */
     private boolean resolveAt(String[] campi, OutputStream out)
             throws IOException, InterruptedException, RichiestaMalformata {
-
+ 
         if (campi.length < 4) {
             throw new RichiestaMalformata();
         }
         String risorsa = campi[1];
         String destinazione = campi[2];
         String tokenRicevuto = campi[3];
-
+ 
         rilasciaSeMio(tokenRicevuto);
-
+ 
         AggregatorState.PeerInfo info = stato.indirizzoDi(destinazione);
         boolean utilizzabile = info != null && info.attivo && possiede(destinazione, risorsa);
-
+ 
         if (!utilizzabile) {
             // Stessa voce di log della RESOLVE senza candidati: senza di essa un download mirato fallito in risoluzione non produrrebbe alcuna RELEASE e sparirebbe dal registro.
             log.aggiungi(risorsa, null, peerId, DownloadLog.Esito.NON_DISPONIBILE);
             Protocol.writeLine(out, errore(Protocol.ERR_NOTFOUND));
             return true;
         }
-
+ 
         Protocol.writeLine(out, rispostaResolve(acquisisci(destinazione, risorsa), destinazione,
                 info.host, info.porta));
         return true;
     }
-
+ 
     /**
      * RELEASE token OK|FAIL risorsa peerSorgente|- : chiude il download, aggiorna la tabella, scrive la riga di log e libera il nodo sorgente.
      *
@@ -314,14 +314,14 @@ public class NodeHandler implements Runnable {
         String tokenRicevuto = campi[1];
         String esitoDichiarato = campi[2];
         String sorgenteDichiarata = campi[4];
-
+ 
         // La validazione dell'esito sta prima di ogni effetto: se fosse dentro il dispatch, un esito scritto male uscirebbe con ERR BADREQUEST dopo aver gia' letto la
         // sessione e lasciando il token appeso.
         boolean riuscito = esitoDichiarato.equals(Protocol.OUTCOME_OK);
         if (!riuscito && !esitoDichiarato.equals(Protocol.OUTCOME_FAIL)) {
             throw new RichiestaMalformata();
         }
-
+ 
         TokenManager.Sessione sessione = token.leggi(tokenRicevuto);
         if (sessione == null) {
             // Token sconosciuto o gia' chiuso: non si tocca ne' la tabella ne' il log. 
@@ -335,7 +335,7 @@ public class NodeHandler implements Runnable {
             Protocol.writeLine(out, errore(Protocol.ERR_BADTOKEN));
             return true;
         }
-
+ 
         if (riuscito) {
             // La RELEASE con esito OK vale anche come notifica di possesso: il richiedente ora ha la risorsa e la tabella lo registra qui, senza attendere un ADDED. 
             // Un secondo scambio aprirebbe una finestra in cui il nodo possiede la rilevazione e la tabella non lo sa, e se il nodo morisse li' dentro resterebbe disallineata.
@@ -346,12 +346,12 @@ public class NodeHandler implements Runnable {
             log.aggiungi(sessione.risorsa, sessione.sorgente, peerId, DownloadLog.Esito.FALLITO);
         }
         // Fallimento con sorgente "-": nessuna scrittura, ne' tabella ne' log.
-
+ 
         token.rilascia(tokenRicevuto);
         Protocol.writeLine(out, Protocol.RESP_OK);
         return true;
     }
-
+ 
     /**
      * Pulizia eseguita su OGNI percorso di uscita. 
      * Sta in un finally e non sul solo ramo in cui readLine ritorna null per una ragione precisa: se il client muore mentre questo thread e' fermo
@@ -366,16 +366,16 @@ public class NodeHandler implements Runnable {
             for (TokenManager.Sessione s : chiuse) {
                 log.aggiungi(s.risorsa, s.sorgente, s.richiedente, DownloadLog.Esito.FALLITO);
             }
-
+ 
             // Il peer diventa inattivo ma le sue risorse restano in tabella.
             stato.disconnetti(peerId);
             System.out.println("Disconnesso " + peerId);
         }
-
+ 
         chiudi();
         aggregatore.rimuoviHandler(this);
     }
-
+ 
     /**
      * Chiude il socket. Lo chiama anche arresta() di Aggregator sul quit, da un altro thread.
      */
@@ -386,16 +386,33 @@ public class NodeHandler implements Runnable {
             // Gia' chiuso: non c'e' nulla da fare e non c'e' nulla da segnalare.
         }
     }
-
-    // Acquisizione del token con le due stampe.
-    // System.out e' gia' sincronizzato internamente, quindi una println non si mescola conquella di un altro thread.
+ 
+    /**
+     * Acquisizione del token con le stampe diagnostiche che rendono visibile il Meccanismo 3.
+     *
+     * Non si puo' sapere PRIMA se il token e' occupato senza aggiungere un metodo a
+     * TokenManager, e comunque la risposta sarebbe gia' vecchia un istante dopo. Si misura
+     * invece quanto e' durata l'acquisizione: se il thread e' rimasto nella wait() per piu' di
+     * un attimo, il token era occupato e la stampa lo dice, con il tempo di attesa. E' cio'
+     * che in demo distingue chi e' passato subito da chi ha aspettato.
+     *
+     * System.out e' gia' sincronizzato internamente: una println non si mescola con quella di
+     * un altro thread.
+     */
     private String acquisisci(String sorgente, String risorsa) throws InterruptedException {
-        System.out.println(peerId + " attende il token di " + sorgente + " per " + risorsa);
+        System.out.println(peerId + " chiede il token di " + sorgente + " per " + risorsa);
+        long inizio = System.currentTimeMillis();
         String assegnato = token.acquisisci(sorgente, peerId, risorsa);
-        System.out.println(peerId + " ottiene " + assegnato + " su " + sorgente);
+        long attesa = System.currentTimeMillis() - inizio;
+        if (attesa > 100) {
+            System.out.println(peerId + " ottiene " + assegnato + " su " + sorgente
+                    + " dopo " + (attesa / 1000.0) + " s di attesa");
+        } else {
+            System.out.println(peerId + " ottiene " + assegnato + " su " + sorgente);
+        }
         return assegnato;
     }
-
+ 
     /**
      * Rilascia un token ricevuto in una RESOLVE o RESOLVE_AT, ma SOLO se appartiene a questo nodo. 
      * Stesso motivo del controllo nella RELEASE: un nodo non deve poter liberare il token che un altro sta ancora usando. 
@@ -409,11 +426,11 @@ public class NodeHandler implements Runnable {
             token.rilascia(tokenRicevuto);
         }
     }
-
+ 
     private static String rispostaResolve(String tokenAssegnato, String sorgente, String host, int porta) {
         return Protocol.RESP_OK + " " + tokenAssegnato + " " + sorgente + " " + host + " " + porta;
     }
-
+ 
     /**
      * AggregatorState non ha un metodo che risponda a "questo peer possiede questa risorsa?"
      * La si ricava dalla riga che elencoRisorse restituisce per quella risorsa, dove i campi dal secondo in poi sono i possessori.
@@ -431,7 +448,7 @@ public class NodeHandler implements Runnable {
         }
         return false;
     }
-
+ 
     // "-" significa nessun escluso. Il client rimanda ogni volta la lista completa, perche' l'aggregatore non tiene alcuno stato fra una RESOLVE e la successiva.
     private static List<String> esclusi(String csv) {
         List<String> elenco = new ArrayList<>();
@@ -446,7 +463,7 @@ public class NodeHandler implements Runnable {
         }
         return elenco;
     }
-
+ 
     private void scriviElenco(OutputStream out, List<String> righe) throws IOException {
         // Il conteggio precede le righe: chi legge sa quante righe consumare senza cercare un terminatore, che prima o poi comparirebbe dentro un dato.
         Protocol.writeLine(out, Protocol.RESP_OK + " " + righe.size());
@@ -454,7 +471,7 @@ public class NodeHandler implements Runnable {
             Protocol.writeLine(out, riga);
         }
     }
-
+ 
     // Trasforma l'IOException di formato in RichiestaMalformata.
     private static int numero(String campo) throws RichiestaMalformata {
         try {
@@ -463,7 +480,7 @@ public class NodeHandler implements Runnable {
             throw new RichiestaMalformata();
         }
     }
-
+ 
     private static String errore(String codice) {
         return Protocol.RESP_ERR + " " + codice;
     }

@@ -3,7 +3,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-
+ 
 /**
  * La sessione interattiva del nodo sensore: legge i comandi da tastiera, li esegue chiamando
  * LocalStore, AggregatorLink o DownloadManager, e stampa il risultato nei formati fissati
@@ -22,12 +22,12 @@ import java.util.List;
  * byte del payload che segue una riga di controllo.
  */
 public class ClientConsole implements Runnable {
-
+ 
     private final LocalStore store;
     private final AggregatorLink link;
     private final DownloadManager downloadManager;
     private final String mioPeerId;
-
+ 
     public ClientConsole(LocalStore store, AggregatorLink link,
                          DownloadManager downloadManager, String mioPeerId) {
         this.store = store;
@@ -35,7 +35,7 @@ public class ClientConsole implements Runnable {
         this.downloadManager = downloadManager;
         this.mioPeerId = mioPeerId;
     }
-
+ 
     @Override
     public void run() {
         BufferedReader tastiera = new BufferedReader(new InputStreamReader(System.in));
@@ -43,7 +43,7 @@ public class ClientConsole implements Runnable {
             while (true) {
                 System.out.print("> ");
                 String riga = tastiera.readLine();
-
+ 
                 if (riga == null) {
                     // Fine di System.in (Ctrl-D, oppure nodo avviato senza terminale).
                     // Termina SOLO la console: il nodo resta vivo e il suo PeerServer
@@ -54,7 +54,7 @@ public class ClientConsole implements Runnable {
                     System.out.println();
                     return;
                 }
-
+ 
                 // maxParts = 3: "add <nome> <contenuto>" deve tenere il contenuto intero,
                 // spazi interni compresi. I nomi delle rilevazioni si assumono senza spazi,
                 // ed e' cio' che rende non ambiguo dove finisce il nome.
@@ -68,10 +68,10 @@ public class ClientConsole implements Runnable {
             System.err.println("Console terminata: " + e.getMessage());
         }
     }
-
+ 
     private void esegui(String[] campi) {
         String comando = campi[0];
-
+ 
         if (comando.equals("listdata")) {
             listdata(campi);
         } else if (comando.equals("add")) {
@@ -90,14 +90,14 @@ public class ClientConsole implements Runnable {
             System.out.println("Comando non riconosciuto. Digita 'help'.");
         }
     }
-
+ 
     private void listdata(String[] campi) {
         if (campi.length < 2) {
             System.out.println("Uso: listdata local|remote [<nome>]|peers");
             return;
         }
         String sotto = campi[1];
-
+ 
         if (sotto.equals("local")) {
             listdataLocal();
         } else if (sotto.equals("remote")) {
@@ -108,7 +108,7 @@ public class ClientConsole implements Runnable {
             System.out.println("Uso: listdata local|remote [<nome>]|peers");
         }
     }
-
+ 
     /** Nessuna rete coinvolta: la risposta e' gia' tutta nell'archivio locale. */
     private void listdataLocal() {
         List<String> nomi = store.elenco();
@@ -117,7 +117,7 @@ public class ClientConsole implements Runnable {
             System.out.println("- " + nome);
         }
     }
-
+ 
     /**
      * Le righe arrivano dall'aggregatore nel formato del filo ("temp_bo peer0 peer1") e qui
      * diventano la forma richiesta dalle specifiche ("- temp_bo: peer0, peer1").
@@ -129,13 +129,13 @@ public class ClientConsole implements Runnable {
      */
     private void listdataRemote(String nome) {
         String argomento = (nome == null) ? Protocol.NONE : nome;
-
+ 
         AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_LIST + " " + argomento, true);
         if (!risposta.ok) {
             stampaErrore(risposta);
             return;
         }
-
+ 
         System.out.println("Risorse:");
         for (String riga : risposta.righeExtra) {
             String[] pezzi = Protocol.split(riga);
@@ -149,7 +149,7 @@ public class ClientConsole implements Runnable {
             System.out.println(linea);
         }
     }
-
+ 
     /** Il nodo esclude se stesso: l'utente chiede la lista degli ALTRI nodi attivi. */
     private void listdataPeers() {
         AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_PEERS, true);
@@ -157,7 +157,7 @@ public class ClientConsole implements Runnable {
             stampaErrore(risposta);
             return;
         }
-
+ 
         System.out.println("Nodi attivi:");
         for (String peerId : risposta.righeExtra) {
             if (!peerId.equals(mioPeerId)) {
@@ -165,7 +165,7 @@ public class ClientConsole implements Runnable {
             }
         }
     }
-
+ 
     /**
      * add <nome> <contenuto>
      *
@@ -189,7 +189,7 @@ public class ClientConsole implements Runnable {
         }
         String nome = campi[1];
         String contenuto = campi[2];
-
+ 
         if (store.contiene(nome)) {
             System.out.println("Errore: rilevazione '" + nome + "' gia' presente.");
             return;
@@ -198,7 +198,7 @@ public class ClientConsole implements Runnable {
             System.out.println("Errore: impossibile salvare '" + nome + "'.");
             return;
         }
-
+ 
         AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_ADDED + " " + nome, false);
         if (!risposta.ok) {
             stampaErrore(risposta);
@@ -206,7 +206,7 @@ public class ClientConsole implements Runnable {
         }
         System.out.println("Rilevazione '" + nome + "' aggiunta e notificata all'aggregatore.");
     }
-
+ 
     /**
      * remove <nome>
      *
@@ -221,7 +221,7 @@ public class ClientConsole implements Runnable {
             return;
         }
         String nome = campi[1];
-
+ 
         if (!store.contiene(nome)) {
             System.out.println("Errore: rilevazione '" + nome + "' non presente.");
             return;
@@ -230,7 +230,7 @@ public class ClientConsole implements Runnable {
             System.out.println("Errore: impossibile rimuovere '" + nome + "'.");
             return;
         }
-
+ 
         AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_REMOVED + " " + nome, false);
         if (!risposta.ok) {
             stampaErrore(risposta);
@@ -238,7 +238,7 @@ public class ClientConsole implements Runnable {
         }
         System.out.println("Rilevazione '" + nome + "' rimossa e notificata all'aggregatore.");
     }
-
+ 
     /**
      * download <nome> cerca la rilevazione sulla rete e lascia scegliere il nodo
      * all'aggregatore; download <peer> <nome> la chiede a un nodo indicato dall'utente.
@@ -246,14 +246,14 @@ public class ClientConsole implements Runnable {
      */
     private void download(String[] campi) {
         if (campi.length == 2) {
-            downloadManager.scarica(campi[1]);
+            downloadManager.download(campi[1]);
         } else if (campi.length == 3) {
-            downloadManager.scaricaDa(campi[1], campi[2]);
+            downloadManager.download(campi[1], campi[2]);
         } else {
             System.out.println("Uso: download <nome>  oppure  download <peer> <nome>");
         }
     }
-
+ 
     private void help() {
         System.out.println("listdata local           elenca le rilevazioni possedute localmente");
         System.out.println("listdata remote [<nome>] elenca chi possiede una o tutte le rilevazioni");
@@ -265,7 +265,7 @@ public class ClientConsole implements Runnable {
         System.out.println("help                     mostra questo elenco");
         System.out.println("quit                     chiude il nodo");
     }
-
+ 
     /**
      * Il DISCONNECT si manda PRIMA di terminare, come chiedono le specifiche: l'aggregatore
      * deve sapere che il nodo se ne va di sua volonta' e non e' caduto. Le sue rilevazioni
@@ -276,7 +276,7 @@ public class ClientConsole implements Runnable {
         System.out.println("Nodo arrestato.");
         System.exit(0);
     }
-
+ 
     /** Un unico punto per gli errori, cosi' il messaggio e' sempre nella stessa forma. */
     private void stampaErrore(AggregatorLink.Risposta risposta) {
         if (risposta.campi.length >= 2 && risposta.campi[1].equals(AggregatorLink.LINK_CADUTO)) {
