@@ -1,17 +1,25 @@
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
  * La sessione interattiva del nodo sensore: legge i comandi da tastiera, li esegue chiamando
- * LocalStore, AggregatorLink o DownloadManager, e stampa il risultato nei formati richiesti da A.5.
+ * LocalStore, AggregatorLink o DownloadManager, e stampa il risultato nei formati fissati
+ * dalle specifiche (A.5).
  *
- * Gira sul thread main del nodo. Mentre e' ferma (in attesa di un comando, o dentro un
- * download che blocca a lungo) il PeerServer continua a rispondere agli altri nodi su un
- * thread proprio: il nodo resta raggiungibile anche a console bloccata.
+ * Gira sul thread principale del nodo. Mentre e' ferma, in attesa di un comando oppure
+ * dentro un download che puo' durare a lungo, il PeerServer continua a servire gli altri
+ * nodi su un thread proprio: il nodo resta raggiungibile dalla rete anche a console
+ * bloccata, che e' quanto le specifiche richiedono.
  *
- * Non possiede stato condiviso proprio: usa quello altrui chiamando un oggetto alla volta.
+ * Non possiede stato condiviso: usa quello altrui chiamando un oggetto alla volta, e non
+ * tiene mai un monitor mentre stampa.
+ *
+ * E' uno dei due soli punti del progetto in cui si usa un BufferedReader, e qui e' corretto
+ * perche' legge da System.in: sui socket sarebbe un errore, perche' il buffer tratterrebbe i
+ * byte del payload che segue una riga di controllo.
  */
 public class ClientConsole implements Runnable {
 
@@ -21,7 +29,7 @@ public class ClientConsole implements Runnable {
     private final String mioPeerId;
 
     public ClientConsole(LocalStore store, AggregatorLink link,
-                          DownloadManager downloadManager, String mioPeerId) {
+                         DownloadManager downloadManager, String mioPeerId) {
         this.store = store;
         this.link = link;
         this.downloadManager = downloadManager;
@@ -35,17 +43,24 @@ public class ClientConsole implements Runnable {
             while (true) {
                 System.out.print("> ");
                 String riga = tastiera.readLine();
+
                 if (riga == null) {
+                    // Fine di System.in (Ctrl-D, oppure nodo avviato senza terminale).
+                    // Termina SOLO la console: il nodo resta vivo e il suo PeerServer
+                    // continua a servire le richieste degli altri. Un nodo senza tastiera e'
+                    // ancora utile alla rete, e spegnerlo qui butterebbe via un nodo che
+                    // funziona. Ci si ferma solo con il comando quit esplicito. E' la stessa
+                    // scelta fatta per la console dell'aggregatore.
                     System.out.println();
-                    quit();
                     return;
                 }
 
-                // maxParts = 3: "add <nome> <contenuto>" -> il contenuto prende tutto il resto
-                // della riga, spazi interni compresi.
+                // maxParts = 3: "add <nome> <contenuto>" deve tenere il contenuto intero,
+                // spazi interni compresi. I nomi delle rilevazioni si assumono senza spazi,
+                // ed e' cio' che rende non ambiguo dove finisce il nome.
                 String[] campi = Protocol.split(riga, 3);
                 if (campi.length == 0) {
-                    continue;
+                    continue; // riga vuota: nessun comando e nessun messaggio di errore
                 }
                 esegui(campi);
             }
@@ -54,7 +69,7 @@ public class ClientConsole implements Runnable {
         }
     }
 
-    private void esegui(String[] campi) throws IOException {
+    private void esegui(String[] campi) {
         String comando = campi[0];
 
         if (comando.equals("listdata")) {
@@ -70,14 +85,15 @@ public class ClientConsole implements Runnable {
         } else if (comando.equals("quit")) {
             quit();
         } else {
+            // La console non termina mai per un comando sbagliato: chiuderla toglierebbe
+            // all'utente l'unico modo di fermare ordinatamente il nodo.
             System.out.println("Comando non riconosciuto. Digita 'help'.");
         }
     }
 
-    // listdata local | listdata remote [<nome>] | listdata peers
-    private void listdata(String[] campi) throws IOException {
+    private void listdata(String[] campi) {
         if (campi.length < 2) {
-            System.out.println("Uso: listdata local|remote|peers");
+            System.out.println("Uso: listdata local|remote [<nome>]|peers");
             return;
         }
         String sotto = campi[1];
@@ -85,19 +101,15 @@ public class ClientConsole implements Runnable {
         if (sotto.equals("local")) {
             listdataLocal();
         } else if (sotto.equals("remote")) {
-            String nome = null;
-            if (campi.length >= 3) {
-                nome = campi[2];
-            }
-            listdataRemote(nome);
+            listdataRemote(campi.length >= 3 ? campi[2] : null);
         } else if (sotto.equals("peers")) {
             listdataPeers();
         } else {
-            System.out.println("Uso: listdata local|remote|peers");
+            System.out.println("Uso: listdata local|remote [<nome>]|peers");
         }
     }
 
-    // Nessuna rete coinvolta: solo LocalStore.
+    /** Nessuna rete coinvolta: la risposta e' gia' tutta nell'archivio locale. */
     private void listdataLocal() {
         List<String> nomi = store.elenco();
         System.out.println("Risorse:");
@@ -106,15 +118,19 @@ public class ClientConsole implements Runnable {
         }
     }
 
-    // LIST <nome|-> all'aggregatore, poi si formatta "risorsa: peer, peer, ..."
-    private void listdataRemote(String nome) throws IOException {
-        String argomento = Protocol.NONE;
-        if (nome != null) {
-            argomento = nome;
-        }
+    /**
+     * Le righe arrivano dall'aggregatore nel formato del filo ("temp_bo peer0 peer1") e qui
+     * diventano la forma richiesta dalle specifiche ("- temp_bo: peer0, peer1").
+     *
+     * La conversione sta nella console e non nell'aggregatore perche' la stessa riga serve
+     * tale e quale sul socket, e perche' le classi di stato custodiscono i dati mentre sono
+     * le console a decidere come mostrarli. E' la stessa conversione che fa
+     * AggregatorConsole per il suo comando listdata.
+     */
+    private void listdataRemote(String nome) {
+        String argomento = (nome == null) ? Protocol.NONE : nome;
 
-        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_LIST + " " + argomento);
-
+        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_LIST + " " + argomento, true);
         if (!risposta.ok) {
             stampaErrore(risposta);
             return;
@@ -123,23 +139,20 @@ public class ClientConsole implements Runnable {
         System.out.println("Risorse:");
         for (String riga : risposta.righeExtra) {
             String[] pezzi = Protocol.split(riga);
-
-            String linea = "- " + pezzi[0] + ":";
+            if (pezzi.length == 0) {
+                continue;
+            }
+            StringBuilder linea = new StringBuilder("- ").append(pezzi[0]).append(':');
             for (int i = 1; i < pezzi.length; i++) {
-                if (i == 1) {
-                    linea = linea + " " + pezzi[i];
-                } else {
-                    linea = linea + ", " + pezzi[i];
-                }
+                linea.append(i == 1 ? " " : ", ").append(pezzi[i]);
             }
             System.out.println(linea);
         }
     }
 
-    // PEERS all'aggregatore: solo i nodi attivi, esclude se stesso.
-    private void listdataPeers() throws IOException {
-        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_PEERS);
-
+    /** Il nodo esclude se stesso: l'utente chiede la lista degli ALTRI nodi attivi. */
+    private void listdataPeers() {
+        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_PEERS, true);
         if (!risposta.ok) {
             stampaErrore(risposta);
             return;
@@ -153,8 +166,23 @@ public class ClientConsole implements Runnable {
         }
     }
 
-    // add <nome> <contenuto...>
-    private void add(String[] campi) throws IOException {
+    /**
+     * add <nome> <contenuto>
+     *
+     * Prima il disco, poi la notifica all'aggregatore: se l'ordine fosse invertito e la
+     * scrittura fallisse, la tabella annuncerebbe alla rete una rilevazione che questo nodo
+     * non possiede, e qualcuno verrebbe a scaricare il vuoto.
+     *
+     * Il controllo contiene() prima di aggiungi() e' un check-then-act, il motivo classico
+     * delle corse fra thread. Qui e' innocuo perche' il LocalStore lo scrive solo questo
+     * thread, e comunque aggiungi() rifiuta da sola un nome gia' presente: il controllo serve
+     * unicamente a dare all'utente un messaggio piu' preciso di "impossibile salvare".
+     *
+     * Il contenuto si converte in byte con UTF-8 esplicito, la stessa codifica che Protocol
+     * fissa sui socket: con la codifica di default della macchina lo stesso file scritto su
+     * due computer diversi conterrebbe byte diversi.
+     */
+    private void add(String[] campi) {
         if (campi.length < 3) {
             System.out.println("Uso: add <nome> <contenuto>");
             return;
@@ -166,14 +194,12 @@ public class ClientConsole implements Runnable {
             System.out.println("Errore: rilevazione '" + nome + "' gia' presente.");
             return;
         }
-
-        boolean salvata = store.aggiungi(nome, contenuto.getBytes());
-        if (!salvata) {
+        if (!store.aggiungi(nome, contenuto.getBytes(StandardCharsets.UTF_8))) {
             System.out.println("Errore: impossibile salvare '" + nome + "'.");
             return;
         }
 
-        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_ADDED + " " + nome);
+        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_ADDED + " " + nome, false);
         if (!risposta.ok) {
             stampaErrore(risposta);
             return;
@@ -181,8 +207,15 @@ public class ClientConsole implements Runnable {
         System.out.println("Rilevazione '" + nome + "' aggiunta e notificata all'aggregatore.");
     }
 
-    // remove <nome>
-    private void remove(String[] campi) throws IOException {
+    /**
+     * remove <nome>
+     *
+     * Stesso ordine dell'add e per lo stesso motivo: prima il disco, poi la notifica. Se
+     * si notificasse per primo, per un istante la tabella direbbe che il nodo non ha piu' la
+     * rilevazione mentre il file c'e' ancora; l'errore opposto, cancellare senza notificare,
+     * e' proprio il disallineamento per cui esiste il protocollo robusto di download.
+     */
+    private void remove(String[] campi) {
         if (campi.length < 2) {
             System.out.println("Uso: remove <nome>");
             return;
@@ -193,14 +226,12 @@ public class ClientConsole implements Runnable {
             System.out.println("Errore: rilevazione '" + nome + "' non presente.");
             return;
         }
-
-        boolean rimossa = store.rimuovi(nome);
-        if (!rimossa) {
+        if (!store.rimuovi(nome)) {
             System.out.println("Errore: impossibile rimuovere '" + nome + "'.");
             return;
         }
 
-        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_REMOVED + " " + nome);
+        AggregatorLink.Risposta risposta = link.invia(Protocol.REQ_REMOVED + " " + nome, false);
         if (!risposta.ok) {
             stampaErrore(risposta);
             return;
@@ -208,7 +239,11 @@ public class ClientConsole implements Runnable {
         System.out.println("Rilevazione '" + nome + "' rimossa e notificata all'aggregatore.");
     }
 
-    // download <nome>  oppure  download <peer> <nome>
+    /**
+     * download <nome> cerca la rilevazione sulla rete e lascia scegliere il nodo
+     * all'aggregatore; download <peer> <nome> la chiede a un nodo indicato dall'utente.
+     * I due casi si distinguono dal numero di argomenti.
+     */
     private void download(String[] campi) {
         if (campi.length == 2) {
             downloadManager.scarica(campi[1]);
@@ -220,7 +255,7 @@ public class ClientConsole implements Runnable {
     }
 
     private void help() {
-        System.out.println("listdata local          elenca le rilevazioni possedute localmente");
+        System.out.println("listdata local           elenca le rilevazioni possedute localmente");
         System.out.println("listdata remote [<nome>] elenca chi possiede una o tutte le rilevazioni");
         System.out.println("listdata peers           elenca gli altri nodi attivi");
         System.out.println("add <nome> <contenuto>   aggiunge una rilevazione locale");
@@ -231,26 +266,25 @@ public class ClientConsole implements Runnable {
         System.out.println("quit                     chiude il nodo");
     }
 
+    /**
+     * Il DISCONNECT si manda PRIMA di terminare, come chiedono le specifiche: l'aggregatore
+     * deve sapere che il nodo se ne va di sua volonta' e non e' caduto. Le sue rilevazioni
+     * restano nella tabella ma non saranno piu' accessibili.
+     */
     private void quit() {
-        link.invia(Protocol.REQ_DISCONNECT);
+        link.invia(Protocol.REQ_DISCONNECT, false);
         System.out.println("Nodo arrestato.");
         System.exit(0);
     }
 
-    // Un unico punto per stampare gli errori di rete in modo uniforme.
+    /** Un unico punto per gli errori, cosi' il messaggio e' sempre nella stessa forma. */
     private void stampaErrore(AggregatorLink.Risposta risposta) {
-        if (risposta.campi.length >= 2 && risposta.campi[1].equals("LINKCADUTO")) {
+        if (risposta.campi.length >= 2 && risposta.campi[1].equals(AggregatorLink.LINK_CADUTO)) {
             System.out.println("Errore: aggregatore non piu' raggiungibile.");
             return;
         }
-
-        String messaggio = "";
-        for (int i = 0; i < risposta.campi.length; i++) {
-            if (i > 0) {
-                messaggio = messaggio + " ";
-            }
-            messaggio = messaggio + risposta.campi[i];
-        }
-        System.out.println("Errore: " + messaggio);
+        // Della risposta "ERR NOTFOUND" all'utente interessa il codice, non la parola ERR.
+        String codice = risposta.campi.length >= 2 ? risposta.campi[1] : "sconosciuto";
+        System.out.println("Errore: " + codice);
     }
 }
